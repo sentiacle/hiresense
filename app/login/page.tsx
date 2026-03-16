@@ -10,17 +10,20 @@ import { toast } from "sonner"
 function LoginContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { login, user } = useAuth()
+  const { login, signup, user } = useAuth()
 
   const preselectedRole = searchParams.get("role") as
     | "recruiter"
     | "student"
     | null
+
+  const [mode, setMode] = useState<AuthMode>("signup")
   const [selectedRole, setSelectedRole] = useState<
     "recruiter" | "student" | null
   >(preselectedRole)
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
 
   useEffect(() => {
     if (user) {
@@ -30,20 +33,29 @@ function LoginContent() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (!selectedRole || !name || !email) return
 
-    login({
-      id: `${selectedRole}-${Date.now()}`,
-      name,
-      email,
-      role: selectedRole,
-    })
+    if (!selectedRole || !email || !password || (mode === "signup" && !name)) {
+      toast.error("Please fill in all required fields")
+      return
+    }
 
-    toast.success(
-      selectedRole === "recruiter"
-        ? "Welcome aboard, Recruiter! Let's find great talent!"
-        : "Welcome! Let's find your dream job!"
-    )
+    if (mode === "signup") {
+      const result = signup({ name, email, password, role: selectedRole })
+      if (!result.ok) {
+        toast.error(result.error ?? "Signup failed")
+        return
+      }
+      toast.success("Account created successfully")
+      router.push(selectedRole === "recruiter" ? "/recruiter" : "/student")
+      return
+    }
+
+    const result = login(email, password, selectedRole)
+    if (!result.ok) {
+      toast.error(result.error ?? "Login failed")
+      return
+    }
+    toast.success("Welcome back!")
     router.push(selectedRole === "recruiter" ? "/recruiter" : "/student")
   }
 
@@ -57,7 +69,6 @@ function LoginContent() {
         transition={{ duration: 0.5 }}
         className="w-full max-w-md"
       >
-        {/* Header */}
         <div className="mb-8 text-center">
           <div className="mb-4 inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-primary">
             <Brain className="h-8 w-8 text-primary-foreground" />
@@ -66,12 +77,32 @@ function LoginContent() {
             Welcome to HireSense AI
           </h1>
           <p className="text-muted-foreground">
-            Choose your role and sign in to get started.
+            {mode === "signup" ? "Create an account" : "Login to your account"}
           </p>
         </div>
 
+        <div className="mb-5 grid grid-cols-2 rounded-lg bg-muted p-1">
+          <button
+            type="button"
+            onClick={() => setMode("signup")}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
+              mode === "signup" ? "bg-background text-foreground" : "text-muted-foreground"
+            }`}
+          >
+            Sign Up
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("login")}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
+              mode === "login" ? "bg-background text-foreground" : "text-muted-foreground"
+            }`}
+          >
+            Login
+          </button>
+        </div>
+
         <form onSubmit={handleSubmit}>
-          {/* Role Selection */}
           <div className="mb-6 grid grid-cols-2 gap-3">
             <button
               type="button"
@@ -91,13 +122,7 @@ function LoginContent() {
               >
                 <Briefcase className="h-6 w-6" />
               </div>
-              <span
-                className={`text-sm font-semibold ${
-                  selectedRole === "recruiter"
-                    ? "text-primary"
-                    : "text-foreground"
-                }`}
-              >
+              <span className={`text-sm font-semibold ${selectedRole === "recruiter" ? "text-primary" : "text-foreground"}`}>
                 Recruiter
               </span>
             </button>
@@ -120,42 +145,31 @@ function LoginContent() {
               >
                 <GraduationCap className="h-6 w-6" />
               </div>
-              <span
-                className={`text-sm font-semibold ${
-                  selectedRole === "student"
-                    ? "text-primary"
-                    : "text-foreground"
-                }`}
-              >
+              <span className={`text-sm font-semibold ${selectedRole === "student" ? "text-primary" : "text-foreground"}`}>
                 Student
               </span>
             </button>
           </div>
 
-          {/* Form fields */}
           <div className="space-y-4">
+            {mode === "signup" && (
+              <div>
+                <label htmlFor="name" className="mb-1.5 block text-sm font-medium text-foreground">
+                  Full Name
+                </label>
+                <input
+                  id="name"
+                  type="text"
+                  required
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Enter your full name"
+                  className="w-full rounded-lg border border-input bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+                />
+              </div>
+            )}
             <div>
-              <label
-                htmlFor="name"
-                className="mb-1.5 block text-sm font-medium text-foreground"
-              >
-                Full Name
-              </label>
-              <input
-                id="name"
-                type="text"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Enter your full name"
-                className="w-full rounded-lg border border-input bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="email"
-                className="mb-1.5 block text-sm font-medium text-foreground"
-              >
+              <label htmlFor="email" className="mb-1.5 block text-sm font-medium text-foreground">
                 Email Address
               </label>
               <input
@@ -168,17 +182,29 @@ function LoginContent() {
                 className="w-full rounded-lg border border-input bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
               />
             </div>
+            <div>
+              <label htmlFor="password" className="mb-1.5 block text-sm font-medium text-foreground">
+                Password
+              </label>
+              <input
+                id="password"
+                type="password"
+                minLength={6}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter your password"
+                className="w-full rounded-lg border border-input bg-background px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
+              />
+            </div>
           </div>
 
           <button
             type="submit"
-            disabled={!selectedRole || !name || !email}
+            disabled={!selectedRole || !email || !password || (mode === "signup" && !name)}
             className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3 text-sm font-semibold text-primary-foreground shadow-lg shadow-primary/25 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
           >
-            Continue as{" "}
-            {selectedRole
-              ? selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)
-              : "..."}
+            {mode === "signup" ? "Create Account" : "Login"}
             <ArrowRight className="h-4 w-4" />
           </button>
         </form>

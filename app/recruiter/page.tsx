@@ -12,10 +12,17 @@ import {
   ArrowRight,
   Timer,
   CheckCircle2,
+  Trash2,
 } from "lucide-react"
 import { PageTransition } from "@/components/shared/page-transition"
-import { getJobs, getApplications, getQuestionsForJob } from "@/lib/store"
+import {
+  getJobs,
+  getApplications,
+  getQuestionsForJob,
+  deleteJob,
+} from "@/lib/store"
 import useSWR from "swr"
+import { toast } from "sonner"
 
 function useRecruiterData() {
   return useSWR("recruiter-dashboard", () => {
@@ -26,7 +33,7 @@ function useRecruiterData() {
 }
 
 export default function RecruiterDashboard() {
-  const { data } = useRecruiterData()
+  const { data, mutate } = useRecruiterData()
   const jobs = data?.jobs ?? []
   const applications = data?.applications ?? []
 
@@ -102,7 +109,6 @@ export default function RecruiterDashboard() {
         </Link>
       </div>
 
-      {/* Stats */}
       <div className="mb-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {statCards.map((stat, i) => (
           <motion.div
@@ -129,11 +135,8 @@ export default function RecruiterDashboard() {
         ))}
       </div>
 
-      {/* Jobs list */}
       <div>
-        <h2 className="mb-4 text-xl font-semibold text-foreground">
-          Your Jobs
-        </h2>
+        <h2 className="mb-4 text-xl font-semibold text-foreground">Your Jobs</h2>
         {jobs.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-border py-16">
             <Briefcase className="mb-4 h-12 w-12 text-muted-foreground/40" />
@@ -169,9 +172,7 @@ export default function RecruiterDashboard() {
                       <h3 className="text-lg font-semibold text-foreground">
                         {job.title}
                       </h3>
-                      <p className="text-sm text-muted-foreground">
-                        {job.company}
-                      </p>
+                      <p className="text-sm text-muted-foreground">{job.company}</p>
                     </div>
                     <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-medium text-primary">
                       Active
@@ -227,6 +228,18 @@ export default function RecruiterDashboard() {
                       View Candidates
                       <ArrowRight className="h-3 w-3" />
                     </Link>
+                    <button
+                      onClick={() => {
+                        if (!confirm("Delete this job? This also removes questions and applications.")) return
+                        deleteJob(job.id)
+                        mutate()
+                        toast.success("Job deleted")
+                      }}
+                      className="inline-flex items-center gap-1 rounded-lg bg-destructive px-3 py-1.5 text-xs font-medium text-destructive-foreground transition-colors hover:opacity-90"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      Delete
+                    </button>
                   </div>
                 </motion.div>
               )

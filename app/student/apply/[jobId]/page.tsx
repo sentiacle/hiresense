@@ -33,6 +33,29 @@ import useSWR from "swr"
 
 type Step = "upload" | "quiz" | "results"
 
+
+function extractTextFromPdfBytes(bytes: Uint8Array): string {
+  try {
+    const raw = new TextDecoder("latin1").decode(bytes)
+    const matches = [...raw.matchAll(/\(([^()]{2,})\)\s*Tj/g)]
+    const extracted = matches
+      .map((m) => m[1])
+      .join(" ")
+      .replace(/\\[nrtbf]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+
+    if (extracted.length > 100) return extracted
+
+    return raw
+      .replace(/[^\x20-\x7E\n]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  } catch {
+    return ""
+  }
+}
+
 export default function ApplyPage() {
   const params = useParams()
   const jobId = params.jobId as string
@@ -55,6 +78,7 @@ export default function ApplyPage() {
   const [step, setStep] = useState<Step>("upload")
   const [cvText, setCvText] = useState("")
   const [cvFileName, setCvFileName] = useState("")
+  const [cvFileDataUrl, setCvFileDataUrl] = useState("")
   const [currentQuestion, setCurrentQuestion] = useState(0)
   const [answers, setAnswers] = useState<number[]>([])
   const [selectedOption, setSelectedOption] = useState<number | null>(null)
@@ -79,12 +103,36 @@ export default function ApplyPage() {
 
   const timer = useTimer(currentTimeLimit, handleTimerExpire)
 
-  const handleCvUpload = () => {
-    if (!cvText.trim()) {
-      toast.error("Please paste your CV text first")
+  const handlePdfSelect = async (file: File | null) => {
+    if (!file) return
+    if (file.type !== "application/pdf") {
+      toast.error("Please upload a PDF file")
       return
     }
-    setCvFileName("resume.pdf")
+
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    const extracted = extractTextFromPdfBytes(bytes)
+    if (!extracted || extracted.length < 30) {
+      toast.error("Could not read enough text from this PDF. Please upload another CV PDF.")
+      return
+    }
+
+    setCvText(extracted)
+    setCvFileName(file.name)
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      setCvFileDataUrl(typeof reader.result === "string" ? reader.result : "")
+    }
+    reader.readAsDataURL(file)
+  }
+
+  const handleCvUpload = () => {
+    if (!cvText.trim() || !cvFileName) {
+      toast.error("Please upload your CV PDF first")
+      return
+    }
+
     fire()
     toast.success("AMAZING! THE CV WAS UPLOADED! GOOD LUCK :)", {
       duration: 4000,
@@ -182,6 +230,7 @@ export default function ApplyPage() {
       jobId: job.id,
       cvFileName: fileName,
       cvText: text,
+      cvFileDataUrl: fileDataUrl,
       cvScore,
       testScore,
       probability,
@@ -277,7 +326,7 @@ export default function ApplyPage() {
                     Upload Your CV
                   </h2>
                   <p className="text-sm text-muted-foreground">
-                    Paste your CV/resume text below for AI analysis.
+                    Upload your CV PDF below for AI analysis.
                   </p>
                 </div>
               </div>
@@ -287,36 +336,38 @@ export default function ApplyPage() {
                 <div className="rounded-xl border-2 border-dashed border-primary/20 bg-primary/5 p-6 text-center transition-colors hover:border-primary/40">
                   <Upload className="mx-auto mb-3 h-10 w-10 text-primary/40" />
                   <p className="mb-1 text-sm font-medium text-foreground">
-                    Paste your CV text below
+                    Upload your CV PDF
                   </p>
                   <p className="text-xs text-muted-foreground">
-                    Copy the content of your CV/resume and paste it in the text
-                    area for demo purposes
+                    PDF upload is required. We extract text from your uploaded CV for scoring
                   </p>
                 </div>
               </div>
 
-              <textarea
-                value={cvText}
-                onChange={(e) => setCvText(e.target.value)}
-                rows={12}
-                placeholder={`Paste your CV/resume text here...
-
-Example:
-John Doe
-Software Engineer with 5+ years of experience
-
-Skills: React, TypeScript, Node.js, Python, Docker, AWS
-Experience: Senior Frontend Engineer at TechCorp (3 years)
-Projects: Built an e-commerce platform, Open source contributor
-Education: B.S. Computer Science, GPA 3.8
-Achievements: Hackathon winner, AWS Certified Developer`}
-                className="w-full resize-none rounded-lg border border-input bg-background px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
-              />
+              <div className="mt-4 rounded-lg border border-input bg-background p-4">
+                <label
+                  htmlFor="cv-pdf"
+                  className="mb-2 block text-sm font-medium text-foreground"
+                >
+                  Upload CV (PDF)
+                </label>
+                <input
+                  id="cv-pdf"
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => void handlePdfSelect(e.target.files?.[0] ?? null)}
+                  className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm text-foreground"
+                />
+                {cvFileName && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Selected: {cvFileName}
+                  </p>
+                )}
+              </div>
 
               <motion.button
                 onClick={handleCvUpload}
-                disabled={!cvText.trim()}
+                disabled={!cvText.trim() || !cvFileName}
                 whileHover={{ scale: 1.01 }}
                 whileTap={{ scale: 0.99 }}
                 className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary px-6 py-3.5 text-base font-semibold text-primary-foreground shadow-lg shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
@@ -531,7 +582,7 @@ Achievements: Hackathon winner, AWS Certified Developer`}
                   <AnimatedCounter value={application.cvScore} suffix="/100" />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Min required: {job.minCvScore}
+                  Requirement status shown below
                 </p>
                 <div className="mt-3">
                   {application.cvScore >= job.minCvScore ? (
@@ -561,7 +612,7 @@ Achievements: Hackathon winner, AWS Certified Developer`}
                   <AnimatedCounter value={application.testScore} suffix="/100" />
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Min required: {job.minTestScore}
+                  Requirement status shown below
                 </p>
                 <div className="mt-3">
                   {application.testScore >= job.minTestScore ? (
@@ -620,8 +671,8 @@ Achievements: Hackathon winner, AWS Certified Developer`}
                 </p>
                 <p className="text-sm text-muted-foreground">
                   {application.passed
-                    ? `Your scores exceed both the CV (${job.minCvScore}) and test (${job.minTestScore}) thresholds.`
-                    : `The passing criteria requires CV >= ${job.minCvScore} and Test >= ${job.minTestScore}.`}
+                    ? "Your scores met all configured requirements for this role."
+                    : "You did not meet all configured requirements this time."}
                 </p>
               </div>
             </motion.div>

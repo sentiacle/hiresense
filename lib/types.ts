@@ -82,6 +82,7 @@ export interface Application {
   jobId: string
   cvFileName: string
   cvText: string
+  cvFileDataUrl?: string
   cvScore: number
   testScore: number
   probability: number
