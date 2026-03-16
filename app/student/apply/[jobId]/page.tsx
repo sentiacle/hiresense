@@ -16,7 +16,12 @@ import {
 } from "lucide-react"
 import { getJob, getQuestionsForJob, getApplication, createApplication } from "@/lib/store"
 import { useAuth } from "@/lib/auth-context"
-import { analyzeCv, gradeTest, predictSuccess, getMotivationalMessage } from "@/lib/scoring"
+import {
+  analyzeCvWithDL,
+  gradeTest,
+  predictSuccess,
+  getMotivationalMessage,
+} from "@/lib/scoring"
 import { useConfetti } from "@/hooks/use-confetti"
 import { useTimer } from "@/hooks/use-timer"
 import { AnimatedCounter } from "@/components/shared/animated-counter"
@@ -81,7 +86,7 @@ export default function ApplyPage() {
     }
     setCvFileName("resume.pdf")
     fire()
-    toast.success("AMAZING! YOUR CV WAS UPLOADED! GOOD LUCK!", {
+    toast.success("AMAZING! THE CV WAS UPLOADED! GOOD LUCK :)", {
       duration: 4000,
       style: {
         background: "oklch(0.5 0.2 270)",
@@ -102,7 +107,7 @@ export default function ApplyPage() {
       }, 1500)
     } else {
       // No questions, go straight to scoring
-      submitApplication(cvText, "resume.pdf", [])
+      void submitApplication(cvText, "resume.pdf", [])
     }
   }
 
@@ -135,7 +140,7 @@ export default function ApplyPage() {
           }
         )
         setTimeout(() => {
-          submitApplication(cvText, cvFileName, newAnswers)
+          void submitApplication(cvText, cvFileName, newAnswers)
         }, 1500)
       }
     },
@@ -143,14 +148,26 @@ export default function ApplyPage() {
     [answers, currentQuestion, questions, cvText, cvFileName]
   )
 
-  const submitApplication = (text: string, fileName: string, testAnswers: number[]) => {
+  const submitApplication = async (
+    text: string,
+    fileName: string,
+    testAnswers: number[]
+  ) => {
     if (!user || !job) return
 
-    const { score: cvScore, breakdown } = analyzeCv(
+    const {
+      score: cvScore,
+      breakdown,
+      modelInfo,
+    } = await analyzeCvWithDL(
       text,
       job.requiredSkills,
       job.weights
     )
+
+    if (modelInfo.model_name !== "heuristic") {
+      toast.success(`CV analyzed with ${modelInfo.model_type}`)
+    }
 
     const correctAnswers = questions.map((q) => q.correctAnswer)
     const testScore = gradeTest(testAnswers, correctAnswers)
