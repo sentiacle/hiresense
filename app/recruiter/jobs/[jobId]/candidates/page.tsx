@@ -13,8 +13,9 @@ import {
   CheckCircle2,
   XCircle,
   Filter,
+  Download,
 } from "lucide-react"
-import { getJob, getApplicationsForJob } from "@/lib/store"
+import { getJob, getApplicationsForJob, getQuestionsForJob } from "@/lib/store"
 import { PageTransition } from "@/components/shared/page-transition"
 import useSWR from "swr"
 
@@ -28,10 +29,12 @@ export default function CandidatesPage() {
   const { data } = useSWR(`candidates-${jobId}`, () => ({
     job: getJob(jobId),
     applications: getApplicationsForJob(jobId),
+    questions: getQuestionsForJob(jobId),
   }))
 
   const job = data?.job
   const applications = data?.applications ?? []
+  const questions = data?.questions ?? []
 
   const [sortKey, setSortKey] = useState<SortKey>("probability")
   const [sortAsc, setSortAsc] = useState(false)
@@ -50,9 +53,7 @@ export default function CandidatesPage() {
       const aVal = a[sortKey]
       const bVal = b[sortKey]
       if (typeof aVal === "string" && typeof bVal === "string") {
-        return sortAsc
-          ? aVal.localeCompare(bVal)
-          : bVal.localeCompare(aVal)
+        return sortAsc ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
       }
       return sortAsc
         ? (aVal as number) - (bVal as number)
@@ -78,8 +79,13 @@ export default function CandidatesPage() {
   }
 
   const SortIcon = ({ columnKey }: { columnKey: SortKey }) => {
-    if (sortKey !== columnKey) return <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/50" />
-    return sortAsc ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />
+    if (sortKey !== columnKey)
+      return <ArrowUpDown className="h-3.5 w-3.5 text-muted-foreground/50" />
+    return sortAsc ? (
+      <ChevronUp className="h-3.5 w-3.5" />
+    ) : (
+      <ChevronDown className="h-3.5 w-3.5" />
+    )
   }
 
   return (
@@ -96,12 +102,10 @@ export default function CandidatesPage() {
           Candidates for {job.title}
         </h1>
         <p className="mt-1 text-muted-foreground">
-          Passing criteria: CV Score {">="} {job.minCvScore} and Test Score {">="}
-          {" "}{job.minTestScore}
+          Review candidate performance and submitted CVs.
         </p>
       </div>
 
-      {/* Filter bar */}
       <div className="mb-4 flex items-center gap-3">
         <Filter className="h-4 w-4 text-muted-foreground" />
         {(["all", "passed", "failed"] as FilterStatus[]).map((status) => (
@@ -168,8 +172,11 @@ export default function CandidatesPage() {
                     onClick={() => handleSort("probability")}
                     className="flex items-center gap-1"
                   >
-                    Match % <SortIcon columnKey="probability" />
+                    Probability <SortIcon columnKey="probability" />
                   </button>
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  CV
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                   Status
@@ -198,36 +205,26 @@ export default function CandidatesPage() {
                       </p>
                     </div>
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary transition-all"
-                          style={{ width: `${app.cvScore}%` }}
-                        />
-                      </div>
-                      <span className="text-sm font-medium text-foreground">
-                        {app.cvScore}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="h-2 w-16 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-chart-2 transition-all"
-                          style={{ width: `${app.testScore}%` }}
-                        />
-                      </div>
-                      <span className="text-sm font-medium text-foreground">
-                        {app.testScore}
-                      </span>
-                    </div>
-                  </td>
+                  <td className="px-4 py-3">{app.cvScore}</td>
+                  <td className="px-4 py-3">{app.testScore}</td>
                   <td className="px-4 py-3">
                     <span className="text-sm font-bold text-primary">
                       {app.probability}%
                     </span>
+                  </td>
+                  <td className="px-4 py-3">
+                    {app.cvFileDataUrl ? (
+                      <a
+                        href={app.cvFileDataUrl}
+                        download={app.cvFileName || `${app.studentName}-cv.pdf`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1 rounded-md bg-secondary px-2 py-1 text-xs font-medium text-secondary-foreground"
+                      >
+                        <Download className="h-3 w-3" /> Download
+                      </a>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">Unavailable</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     {app.passed ? (
@@ -247,7 +244,6 @@ export default function CandidatesPage() {
             </tbody>
           </table>
 
-          {/* Expanded Details */}
           <AnimatePresence>
             {expandedId && (
               <motion.div
@@ -257,43 +253,60 @@ export default function CandidatesPage() {
                 className="overflow-hidden border-t border-border/40 bg-muted/20"
               >
                 {(() => {
-                  const app = filteredAndSorted.find(
-                    (a) => a.id === expandedId
-                  )
+                  const app = filteredAndSorted.find((a) => a.id === expandedId)
                   if (!app) return null
-                  const factors = [
-                    { label: "Skills", value: app.breakdown.skills },
-                    { label: "Experience", value: app.breakdown.experience },
-                    { label: "Projects", value: app.breakdown.projects },
-                    { label: "Achievements", value: app.breakdown.achievements },
-                    { label: "Education", value: app.breakdown.education },
-                  ]
+
                   return (
-                    <div className="px-6 py-4">
-                      <h4 className="mb-3 text-sm font-semibold text-foreground">
+                    <div className="space-y-4 px-6 py-4">
+                      <h4 className="text-sm font-semibold text-foreground">
                         CV Score Breakdown for {app.studentName}
                       </h4>
+
                       <div className="grid gap-3 sm:grid-cols-5">
-                        {factors.map((f) => (
+                        {[
+                          { label: "Skills", value: app.breakdown.skills },
+                          { label: "Experience", value: app.breakdown.experience },
+                          { label: "Projects", value: app.breakdown.projects },
+                          { label: "Achievements", value: app.breakdown.achievements },
+                          { label: "Education", value: app.breakdown.education },
+                        ].map((f) => (
                           <div key={f.label}>
-                            <p className="mb-1 text-xs text-muted-foreground">
-                              {f.label}
-                            </p>
-                            <div className="flex items-center gap-2">
-                              <div className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                                <motion.div
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${f.value}%` }}
-                                  transition={{ duration: 0.5 }}
-                                  className="h-full rounded-full bg-primary"
-                                />
-                              </div>
-                              <span className="text-xs font-bold text-foreground">
-                                {f.value}
-                              </span>
-                            </div>
+                            <p className="mb-1 text-xs text-muted-foreground">{f.label}</p>
+                            <p className="text-sm font-semibold text-foreground">{f.value}</p>
                           </div>
                         ))}
+                      </div>
+
+                      <div>
+                        <h5 className="mb-2 text-sm font-semibold text-foreground">
+                          Question-by-question answers
+                        </h5>
+                        <div className="space-y-2">
+                          {questions.map((q, idx) => {
+                            const selected = app.answers[idx]
+                            const selectedText =
+                              selected === -1 || selected === undefined
+                                ? "No answer"
+                                : q.options[selected] ?? "Invalid answer"
+                            const correctText = q.options[q.correctAnswer] ?? "N/A"
+                            return (
+                              <div
+                                key={q.id}
+                                className="rounded-lg border border-border/50 bg-background p-3"
+                              >
+                                <p className="text-sm font-medium text-foreground">
+                                  Q{idx + 1}. {q.question}
+                                </p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                  Student answer: <span className="font-medium">{selectedText}</span>
+                                </p>
+                                <p className="text-xs text-muted-foreground">
+                                  Correct answer: <span className="font-medium">{correctText}</span>
+                                </p>
+                              </div>
+                            )
+                          })}
+                        </div>
                       </div>
                     </div>
                   )

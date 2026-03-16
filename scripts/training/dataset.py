@@ -6,6 +6,7 @@ Combines Resume Corpus + NER-Annotated-CVs datasets
 import os
 import json
 import re
+import glob
 from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
@@ -164,6 +165,115 @@ class DataProcessor:
                         ))
                         
         return examples
+
+    def load_kaggle_resume_pdf(self) -> List[NERExample]:
+        """
+        Load resumes from the Kaggle resume-data-pdf dataset path.
+
+        Expected input can be:
+        - plain text files (*.txt)
+        - CSV files containing resume text columns
+
+        Since this dataset is not BIO-annotated, we generate weak labels
+        using resume-aware patterns so it can contribute to training.
+        """
+        examples = []
+        kaggle_path = self.config.kaggle_pdf_path
+
+        if not os.path.exists(kaggle_path):
+            print(f"Warning: Kaggle resume path not found at {kaggle_path}")
+            return examples
+
+        # Load TXT resumes
+        for filepath in glob.glob(os.path.join(kaggle_path, "**", "*.txt"), recursive=True):
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+                    text = f.read().strip()
+                if len(text) < 50:
+                    continue
+                examples.append(self._weak_label_resume_text(text))
+            except Exception as e:
+                print(f"Warning: failed reading {filepath}: {e}")
+
+        # Load CSV resumes
+        for filepath in glob.glob(os.path.join(kaggle_path, "**", "*.csv"), recursive=True):
+            try:
+                df = pd.read_csv(filepath)
+            except Exception as e:
+                print(f"Warning: failed loading CSV {filepath}: {e}")
+                continue
+
+            text_col = self._find_resume_text_column(df)
+            if text_col is None:
+                continue
+
+            for text in df[text_col].dropna().astype(str):
+                if len(text.strip()) < 50:
+                    continue
+                examples.append(self._weak_label_resume_text(text))
+
+        return examples
+
+    def _find_resume_text_column(self, df: pd.DataFrame) -> Optional[str]:
+        """Find the most likely text column in a resume CSV."""
+        candidates = ["resume", "resume_str", "text", "cv", "content"]
+        lowered = {c.lower(): c for c in df.columns}
+
+        for cand in candidates:
+            if cand in lowered:
+                return lowered[cand]
+
+        # fallback: largest average text length
+        best_col = None
+        best_len = 0
+        for col in df.columns:
+            if df[col].dtype == object:
+                avg_len = df[col].dropna().astype(str).str.len().mean()
+                if pd.notna(avg_len) and avg_len > best_len:
+                    best_len = avg_len
+                    best_col = col
+
+        return best_col if best_len > 40 else None
+
+    def _weak_label_resume_text(self, text: str) -> NERExample:
+        """Create weak BIO labels from raw resume text."""
+        tokens = re.findall(r"\b\w+[\w+.-]*\b|[^\w\s]", text)
+        labels = ["O"] * len(tokens)
+
+        skill_terms = {
+            "python", "javascript", "typescript", "java", "c++", "react", "node",
+            "fastapi", "pytorch", "tensorflow", "sql", "mongodb", "docker", "aws",
+            "kubernetes", "nlp", "machine", "learning"
+        }
+        degree_terms = {"bachelor", "master", "phd", "doctorate", "university", "college"}
+        cert_terms = {"certified", "certification", "certificate", "aws", "azure", "gcp"}
+        proj_terms = {"project", "projects", "built", "developed", "implemented"}
+        ach_terms = {"award", "winner", "recognition", "published", "patent"}
+        exp_terms = {"experience", "years", "senior", "lead", "manager"}
+
+        for i, token in enumerate(tokens):
+            tok = token.lower()
+            prev = labels[i - 1] if i > 0 else "O"
+
+            def set_label(base: str):
+                labels[i] = f"I-{base}" if prev in {f"B-{base}", f"I-{base}"} else f"B-{base}"
+
+            if tok in skill_terms:
+                set_label("SKILL")
+            elif tok in degree_terms:
+                set_label("EDU")
+            elif tok in cert_terms:
+                set_label("CERT")
+            elif tok in proj_terms:
+                set_label("PROJ")
+            elif tok in ach_terms:
+                set_label("ACH")
+            elif tok in exp_terms or re.fullmatch(r"\d+", tok):
+                set_label("EXP")
+            elif re.fullmatch(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", token):
+                set_label("CONTACT")
+
+        return NERExample(tokens=tokens, labels=labels, text=" ".join(tokens))
     
     def _load_conll(self, filepath: str) -> List[NERExample]:
         """Load CoNLL format file"""
@@ -406,6 +516,10 @@ class DataProcessor:
         ner_annotated = self.load_ner_annotated_cvs()
         print(f"Loaded {len(ner_annotated)} examples from NER-Annotated-CVs")
         all_examples.extend(ner_annotated)
+
+        kaggle_examples = self.load_kaggle_resume_pdf()
+        print(f"Loaded {len(kaggle_examples)} weakly-labeled examples from Kaggle resume-data-pdf")
+        all_examples.extend(kaggle_examples)
         
         # If no real data, use synthetic
         if len(all_examples) < 100:
