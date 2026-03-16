@@ -154,7 +154,8 @@ export default function ApplyPage() {
         timer.start()
       }, 1500)
     } else {
-      void submitApplication(cvText, cvFileName, [], cvFileDataUrl)
+      // No questions, go straight to scoring
+      void submitApplication(cvText, "resume.pdf", [])
     }
   }
 
@@ -187,7 +188,7 @@ export default function ApplyPage() {
           }
         )
         setTimeout(() => {
-          void submitApplication(cvText, cvFileName, newAnswers, cvFileDataUrl)
+          void submitApplication(cvText, cvFileName, newAnswers)
         }, 1500)
       }
     },
@@ -198,8 +199,7 @@ export default function ApplyPage() {
   const submitApplication = async (
     text: string,
     fileName: string,
-    testAnswers: number[],
-    fileDataUrl?: string
+    testAnswers: number[]
   ) => {
     if (!user || !job) return
 

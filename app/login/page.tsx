@@ -7,8 +7,6 @@ import { Brain, Briefcase, GraduationCap, ArrowRight } from "lucide-react"
 import { useAuth } from "@/lib/auth-context"
 import { toast } from "sonner"
 
-type AuthMode = "login" | "signup"
-
 function LoginContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
@@ -217,13 +215,7 @@ function LoginContent() {
 
 export default function LoginPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex min-h-screen items-center justify-center">
-          Loading...
-        </div>
-      }
-    >
+    <Suspense fallback={<div className="flex min-h-screen items-center justify-center">Loading...</div>}>
       <LoginContent />
     </Suspense>
   )
