@@ -184,23 +184,24 @@ def evaluate(
             for i in range(len(predictions)):
                 pred_seq = predictions[i]
                 label_seq = labels[i].cpu().numpy()
+                mask_seq = attention_mask[i].cpu().numpy()
 
                 true_labels = []
                 pred_labels = []
-
                 pred_idx = 0
 
                 for j in range(len(label_seq)):
-                    if label_seq[j] == -100:
+                    # Keep the same valid-token policy used in model.forward
+                    if mask_seq[j] != 1 or label_seq[j] == -100:
                         continue
 
                     true_labels.append(ID2LABEL[label_seq[j]])
 
                     if pred_idx < len(pred_seq):
                         pred_labels.append(ID2LABEL[pred_seq[pred_idx]])
-                        pred_idx += 1
                     else:
                         pred_labels.append("O")
+                    pred_idx += 1
 
                 if len(true_labels) > 0:
                     all_labels.append(true_labels)

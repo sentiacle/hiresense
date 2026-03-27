@@ -97,7 +97,7 @@ class BertBiLSTMCRF(nn.Module):
         outputs = {"emissions": emissions}
         
         if labels is not None:
-            mask = attention_mask.bool()
+            mask = attention_mask.bool() & (labels != -100)
             labels_for_crf = labels.clone()
             labels_for_crf[labels == -100] = 0
             
@@ -107,7 +107,7 @@ class BertBiLSTMCRF(nn.Module):
             outputs["loss"] = loss
         
         with torch.no_grad():
-            mask = attention_mask.bool()
+            mask = (attention_mask.bool() & (labels != -100)) if labels is not None else attention_mask.bool()
             with autocast(device_type='cuda', enabled=False):
                 predictions = self.crf.decode(emissions.float(), mask=mask)
             outputs["predictions"] = predictions
@@ -517,10 +517,15 @@ def evaluate(model, dataloader, device):
                 outputs["predictions"], labels.cpu().numpy(), attention_mask.cpu().numpy()
             ):
                 pred_labels, true_labels = [], []
-                for pred, label, m in zip(pred_seq, label_seq, mask):
+                pred_idx = 0
+                for label, m in zip(label_seq, mask):
                     if m == 1 and label != -100:
-                        pred_labels.append(ID2LABEL[pred])
+                        if pred_idx < len(pred_seq):
+                            pred_labels.append(ID2LABEL[pred_seq[pred_idx]])
+                        else:
+                            pred_labels.append("O")
                         true_labels.append(ID2LABEL[label])
+                        pred_idx += 1
                 if pred_labels:
                     all_preds.append(pred_labels)
                     all_labels.append(true_labels)

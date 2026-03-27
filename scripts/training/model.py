@@ -108,10 +108,9 @@ class BertBiLSTMCRF(nn.Module):
         outputs = {"emissions": emissions}
         
         if labels is not None:
-            # Create mask for CRF (ignore -100 labels and padding)
-            # CRF mask: True for valid positions, False for ignored
-            mask = attention_mask.bool().clone()
-            mask[:, 0] = True
+            # Create mask for CRF (ignore special tokens/subword ignores = -100)
+            # CRF mask: True for valid supervised positions, False for ignored
+            mask = attention_mask.bool() & (labels != -100)
             
             # Replace -100 with 0 for CRF (it will be masked anyway)
             labels_for_crf = labels.clone()
@@ -123,8 +122,12 @@ class BertBiLSTMCRF(nn.Module):
             
         # Get predictions using Viterbi decoding
         with torch.no_grad():
-            mask = attention_mask.bool().clone()
-            mask[:, 0] = True
+            # During training/eval, decode on the same supervised positions used for loss.
+            # During inference (labels is None), decode on non-padding tokens.
+            if labels is not None:
+                mask = attention_mask.bool() & (labels != -100)
+            else:
+                mask = attention_mask.bool()
             predictions = self.crf.decode(emissions, mask=mask)
             outputs["predictions"] = predictions
             
