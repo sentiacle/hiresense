@@ -17,6 +17,11 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
+import pdfplumber
+import fitz  # PyMuPDF
+from PIL import Image
+import pytesseract
+
 from config import (
     DataConfig, TrainingConfig, 
     LABEL2ID, ID2LABEL, ENTITY_LABELS
@@ -166,16 +171,13 @@ class DataProcessor:
                         
         return examples
 
+
     def load_kaggle_resume_pdf(self) -> List[NERExample]:
         """
-        Load resumes from the Kaggle resume-data-pdf dataset path.
-
-        Expected input can be:
-        - plain text files (*.txt)
-        - CSV files containing resume text columns
-
-        Since this dataset is not BIO-annotated, we generate weak labels
-        using resume-aware patterns so it can contribute to training.
+        Load resumes from Kaggle PDF dataset with:
+        - PDF parsing (pdfplumber)
+        - OCR fallback (pytesseract)
+        - TXT + CSV support
         """
         examples = []
         kaggle_path = self.config.kaggle_pdf_path
@@ -184,94 +186,232 @@ class DataProcessor:
             print(f"Warning: Kaggle resume path not found at {kaggle_path}")
             return examples
 
-        # Load TXT resumes
-        for filepath in glob.glob(os.path.join(kaggle_path, "**", "*.txt"), recursive=True):
+        # =======================
+        # LOAD PDF FILES
+        # =======================
+        # Use os.walk for better Windows compatibility
+        pdf_files = []
+        for root, dirs, files in os.walk(kaggle_path):
+            for file in files:
+                if file.lower().endswith('.pdf'):
+                    pdf_files.append(os.path.join(root, file))
+        
+        print(f"Found {len(pdf_files)} PDF files in {kaggle_path}")
+        
+        # Track statistics for debugging
+        stats = {
+            "total": len(pdf_files),
+            "pdfplumber_success": 0,
+            "ocr_success": 0,
+            "empty_text": 0,
+            "too_short": 0,
+            "errors": 0
+        }
+
+        for filepath in tqdm(pdf_files, desc="Loading PDF resumes"):
             try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    text = f.read().strip()
-                if len(text) < 50:
+                text = ""
+
+                # ---- Try normal extraction with pdfplumber ----
+                try:
+                    with pdfplumber.open(filepath) as pdf:
+                        for page in pdf.pages:
+                            page_text = page.extract_text()
+                            if page_text:
+                                text += page_text + "\n"
+                    text = text.strip()
+                    if text:
+                        stats["pdfplumber_success"] += 1
+                except Exception as e:
+                    pass  # Will try OCR next
+                except (FileNotFoundError, NameError) as e:
+                    print("Could not find poppler, install it with brew install poppler")
+                    raise e
+
+                 # ---- OCR fallback if pdfplumber returned empty ----
+                if not text:
+                    try:
+                        doc = fitz.open(filepath)
+                        ocr_text = ""
+                        for page_num in range(min(3, len(doc))):
+                            page = doc[page_num]
+                            pix = page.get_pixmap(dpi=150)
+                            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                            ocr_text += pytesseract.image_to_string(img) + "\n"
+                        text = ocr_text.strip()
+                        if text:
+                            stats["ocr_success"] += 1
+                    except Exception as ocr_error:
+                        pass
+
+                if not text:
+                    stats["empty_text"] += 1
                     continue
-                examples.append(self._weak_label_resume_text(text))
-            except Exception as e:
-                print(f"Warning: failed reading {filepath}: {e}")
 
-        # Load CSV resumes
-        for filepath in glob.glob(os.path.join(kaggle_path, "**", "*.csv"), recursive=True):
-            try:
-                df = pd.read_csv(filepath)
-            except Exception as e:
-                print(f"Warning: failed loading CSV {filepath}: {e}")
-                continue
+                example = self._weak_label_resume_text(text)
 
-            text_col = self._find_resume_text_column(df)
-            if text_col is None:
-                continue
-
-            for text in df[text_col].dropna().astype(str):
-                if len(text.strip()) < 50:
+                if example is None or len(example.tokens) <= 5:
+                    stats["too_short"] += 1
                     continue
-                examples.append(self._weak_label_resume_text(text))
+                    
+                examples.append(example)
+
+            except Exception as e:
+                stats["errors"] += 1
+                # Only print first few errors to avoid spam
+                if stats["errors"] <= 5:
+                    print(f"Warning: failed reading PDF {os.path.basename(filepath)}: {e}")
+        
+        # Print statistics
+        print(f"\n--- PDF Loading Statistics ---")
+        print(f"Total PDFs found: {stats['total']}")
+        print(f"pdfplumber extracted: {stats['pdfplumber_success']}")
+        print(f"OCR extracted: {stats['ocr_success']}")
+        print(f"Empty (no text): {stats['empty_text']}")
+        print(f"Too short (<=5 tokens): {stats['too_short']}")
+        print(f"Errors: {stats['errors']}")
+        print(f"Successfully loaded: {len(examples)}")
+        print(f"------------------------------\n")
+
+        print(f"Total usable resumes loaded: {len(examples)}")
 
         return examples
 
-    def _find_resume_text_column(self, df: pd.DataFrame) -> Optional[str]:
-        """Find the most likely text column in a resume CSV."""
-        candidates = ["resume", "resume_str", "text", "cv", "content"]
-        lowered = {c.lower(): c for c in df.columns}
+    def _weak_label_resume_text(self, text: str) -> Optional[NERExample]:
+        """Create improved weak BIO labels from raw resume text."""
+        import re
 
-        for cand in candidates:
-            if cand in lowered:
-                return lowered[cand]
+        # 🔥 Guard 1: remove garbage text
+        if not text or len(text.strip()) < 20:
+            return None
 
-        # fallback: largest average text length
-        best_col = None
-        best_len = 0
-        for col in df.columns:
-            if df[col].dtype == object:
-                avg_len = df[col].dropna().astype(str).str.len().mean()
-                if pd.notna(avg_len) and avg_len > best_len:
-                    best_len = avg_len
-                    best_col = col
+        tokens = re.findall(r"\b\w+[\w+.+-]*\b|[^\w\s]", text)
 
-        return best_col if best_len > 40 else None
+        # 🔥 Guard 2: too small = useless
+        if len(tokens) < 5:
+            return None
 
-    def _weak_label_resume_text(self, text: str) -> NERExample:
-        """Create weak BIO labels from raw resume text."""
-        tokens = re.findall(r"\b\w+[\w+.-]*\b|[^\w\s]", text)
         labels = ["O"] * len(tokens)
 
+        # 🔥 Better vocab (expanded)
         skill_terms = {
-            "python", "javascript", "typescript", "java", "c++", "react", "node",
-            "fastapi", "pytorch", "tensorflow", "sql", "mongodb", "docker", "aws",
-            "kubernetes", "nlp", "machine", "learning"
+            # IT & Tech
+            "python", "javascript", "typescript", "java", "c++", "c#", "react", "react.js",
+            "node", "nodejs", "express", "nextjs", "html", "css", "tailwind", "vue",
+            "bootstrap", "pytorch", "tensorflow", "keras", "scikit-learn", "numpy",
+            "pandas", "sql", "mongodb", "postgresql", "mysql", "docker", "aws",
+            "azure", "gcp", "kubernetes", "nlp", "machine", "learning", "deep",
+            "git", "linux", "rest", "graphql", "redis", "elasticsearch", "opencv",
+            "firebase", "supabase", "swift", "kotlin", "flutter", "dart", "rust", "go",
+            "hadoop", "spark", "hive", "devops", "ci/cd", "jenkins", "jira",
+            # Finance, Accounting & Banking
+            "accounting", "audit", "tax", "tally", "financial", "budget", "payroll",
+            "bookkeeping", "reconciliation", "invoice", "banking", "kyc", "aml",
+            # HR & Management
+            "recruitment", "onboarding", "sourcing", "hr", "agile", "scrum",
+            "management", "leadership", "operations", "strategy", "planning", "bpo",
+            # Sales & Marketing
+            "sales", "b2b", "b2c", "marketing", "seo", "sem", "lead", "generation",
+            "crm", "salesforce", "advertising", "branding", "campaign",
+            # Design, Art & Architecture
+            "photoshop", "illustrator", "figma", "ui", "ux", "autocad", "revit",
+            "design", "architecture", "interior", "3d", "rendering",
+            # Engineering (Civil, Mech, Electrical) & Other
+            "civil", "mechanical", "electrical", "hvac", "plc", "cad", "structural",
+            "thermodynamics", "manufacturing", "quality", "control", "maintenance",
+            # Legal, Healthcare & Agriculture
+            "legal", "litigation", "drafting", "compliance", "court", "advocate",
+            "nursing", "medical", "healthcare", "clinical", "agriculture", "farming",
+            # General Soft Skills
+            "communication", "teamwork", "analytical", "troubleshooting"
         }
-        degree_terms = {"bachelor", "master", "phd", "doctorate", "university", "college"}
+
+        degree_terms = {
+            "bachelor", "master", "phd", "doctorate", "b.s", "m.s", "b.sc", "m.sc", 
+            "b.a", "m.a", "mba", "b.com", "m.com", "b.e", "b.tech", "m.tech", 
+            "llb", "llm", "b.arch", "ca", "cfa", "cpa", "diploma", "university", "college"
+        }
+
         cert_terms = {"certified", "certification", "certificate", "aws", "azure", "gcp"}
+
         proj_terms = {"project", "projects", "built", "developed", "implemented"}
-        ach_terms = {"award", "winner", "recognition", "published", "patent"}
-        exp_terms = {"experience", "years", "senior", "lead", "manager"}
 
-        for i, token in enumerate(tokens):
-            tok = token.lower()
-            prev = labels[i - 1] if i > 0 else "O"
+        ach_terms = {"award", "winner", "recognition", "published", "patent", "honors", "achieved", "champion", "scholarship", "medal"}
 
-            def set_label(base: str):
-                labels[i] = f"I-{base}" if prev in {f"B-{base}", f"I-{base}"} else f"B-{base}"
+        exp_terms = {
+            "experience", "years", "senior", "lead", "manager", "engineer", "developer", "intern",
+            "associate", "consultant", "executive", "officer", "specialist", "coordinator", 
+            "director", "architect", "analyst", "supervisor", "administrator", "accountant", "advocate"
+        }
 
+        # 🔥 Regex patterns (much stronger signal)
+        email_pattern = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+        phone_pattern = re.compile(r"\+?\d[\d\s\-]{7,}\d")
+
+        # 🔥 Phrase detection (important upgrade)
+        phrase_skills = [
+            ["machine", "learning"],
+            ["deep", "learning"],
+            ["data", "science"],
+            ["computer", "vision"],
+            ["natural", "language", "processing"],
+            ["node", "js"], ["next", "js"], ["react", "native"], ["web", "developer"],
+            ["digital", "marketing"], ["human", "resources"], ["business", "analyst"],
+            ["quality", "assurance"], ["customer", "service"], ["supply", "chain"],
+            ["project", "management"], ["financial", "analysis"], ["civil", "engineer"],
+            ["mechanical", "engineer"], ["electrical", "engineer"], ["software", "engineer"]
+        ]
+
+        # 🔥 Helper
+        def set_label(i, base, is_start):
+            labels[i] = f"B-{base}" if is_start else f"I-{base}"
+
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i].lower()
+
+            # =========================
+            # 🔥 Phrase matching
+            # =========================
+            matched = False
+            for phrase in phrase_skills:
+                if tokens[i:i+len(phrase)] == phrase:
+                    for j in range(len(phrase)):
+                        set_label(i + j, "SKILL", j == 0)
+                    i += len(phrase)
+                    matched = True
+                    break
+            if matched:
+                continue
+
+            # =========================
+            # 🔥 Single token logic
+            # =========================
             if tok in skill_terms:
-                set_label("SKILL")
+                set_label(i, "SKILL", True)
+
             elif tok in degree_terms:
-                set_label("EDU")
+                set_label(i, "EDU", True)
+
             elif tok in cert_terms:
-                set_label("CERT")
+                set_label(i, "CERT", True)
+
             elif tok in proj_terms:
-                set_label("PROJ")
+                set_label(i, "PROJ", True)
+
             elif tok in ach_terms:
-                set_label("ACH")
+                set_label(i, "ACH", True)
+
             elif tok in exp_terms or re.fullmatch(r"\d+", tok):
-                set_label("EXP")
-            elif re.fullmatch(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", token):
-                set_label("CONTACT")
+                set_label(i, "EXP", True)
+
+            elif email_pattern.fullmatch(tokens[i]):
+                set_label(i, "CONTACT", True)
+
+            elif phone_pattern.fullmatch(tokens[i]):
+                set_label(i, "CONTACT", True)
+
+            i += 1
 
         return NERExample(tokens=tokens, labels=labels, text=" ".join(tokens))
     
@@ -555,7 +695,8 @@ def create_dataloaders(
     tokenizer: BertTokenizerFast,
     train_config: TrainingConfig
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Create PyTorch DataLoaders"""
+    """Create PyTorch DataLoaders - Windows compatible"""
+    import platform
     
     train_dataset = ResumeNERDataset(
         train_examples, tokenizer, train_config.max_seq_length
@@ -567,28 +708,35 @@ def create_dataloaders(
         test_examples, tokenizer, train_config.max_seq_length
     )
     
+    # Windows requires num_workers=0 due to multiprocessing issues
+    # Linux/Mac can use multiple workers for faster data loading
+    num_workers = 0 if platform.system() == "Windows" else 4
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_config.train_batch_size,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=(train_config.device == "cuda"),
+        persistent_workers=(num_workers > 0)
     )
     
     val_loader = DataLoader(
         val_dataset,
         batch_size=train_config.eval_batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=(train_config.device == "cuda"),
+        persistent_workers=(num_workers > 0)
     )
     
     test_loader = DataLoader(
         test_dataset,
         batch_size=train_config.eval_batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True
+        num_workers=num_workers,
+        pin_memory=(train_config.device == "cuda"),
+        persistent_workers=(num_workers > 0)
     )
     
     return train_loader, val_loader, test_loader

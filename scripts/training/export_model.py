@@ -1,7 +1,4 @@
-"""
-HireSense AI - Model Export Script
-Export trained model for deployment
-"""
+# This file is deprecated. Model exportation is now fully integrated into train.py.
 
 import os
 import json

@@ -1,8 +1,14 @@
 """
 HireSense AI - Training Script
 BERT + BiLSTM + CRF for Resume NER
+
+Optimized for modern GPUs (e.g., RTX 4060 Ti) with:
+- Mixed precision training (FP16)
+- Gradient accumulation
+- Memory-efficient settings
 """
 
+import argparse
 import os
 import time
 import random
@@ -10,7 +16,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import LinearLR, SequentialLR, ConstantLR
+from torch.amp import autocast, GradScaler
 from transformers import BertTokenizerFast, get_linear_schedule_with_warmup
 from tqdm import tqdm
 from seqeval.metrics import classification_report, f1_score
@@ -30,7 +36,7 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.benchmark = True  # Enable for fixed input sizes (faster)
 
 
 def get_optimizer_and_scheduler(
@@ -75,9 +81,11 @@ def train_epoch(
     optimizer,
     scheduler,
     train_config: TrainingConfig,
-    epoch: int
+    epoch: int,
+    scaler: GradScaler = None,
+    accumulation_steps: int = 1
 ):
-    """Train for one epoch"""
+    """Train for one epoch with mixed precision and gradient accumulation"""
     model.train()
     total_loss = 0
     num_batches = 0
@@ -88,38 +96,61 @@ def train_epoch(
         leave=True
     )
     
-    for batch in progress_bar:
+    optimizer.zero_grad()
+    
+    for batch_idx, batch in enumerate(progress_bar):
         # Move to device
         input_ids = batch["input_ids"].to(train_config.device)
         attention_mask = batch["attention_mask"].to(train_config.device)
         labels = batch["labels"].to(train_config.device)
         
-        # Forward pass
-        outputs = model(input_ids, attention_mask, labels)
-        loss = outputs["loss"]
+        # Forward pass with mixed precision (FP16)
+        if train_config.fp16 and scaler is not None:
+            with autocast(device_type='cuda', dtype=torch.float16):
+                outputs = model(input_ids, attention_mask, labels)
+                loss = outputs["loss"] / accumulation_steps
+            
+            # Backward pass with gradient scaling
+            scaler.scale(loss).backward()
+            
+            if (batch_idx + 1) % accumulation_steps == 0:
+                # Gradient clipping
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    train_config.max_grad_norm
+                )
+                
+                # Update with scaled gradients
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
+                optimizer.zero_grad()
+        else:
+            # Standard FP32 training
+            outputs = model(input_ids, attention_mask, labels)
+            loss = outputs["loss"] / accumulation_steps
+            
+            loss.backward()
+            
+            if (batch_idx + 1) % accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    train_config.max_grad_norm
+                )
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
         
-        # Backward pass
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
-            train_config.max_grad_norm
-        )
-        
-        # Update
-        optimizer.step()
-        scheduler.step()
-        
-        total_loss += loss.item()
+        total_loss += loss.item() * accumulation_steps
         num_batches += 1
         
         # Update progress bar
         progress_bar.set_postfix({
-            "loss": f"{loss.item():.4f}",
+            "loss": f"{loss.item() * accumulation_steps:.4f}",
             "avg_loss": f"{total_loss / num_batches:.4f}",
-            "lr": f"{scheduler.get_last_lr()[0]:.2e}"
+            "lr": f"{scheduler.get_last_lr()[0]:.2e}",
+            "gpu_mem": f"{torch.cuda.memory_allocated() / 1e9:.1f}GB" if torch.cuda.is_available() else "N/A"
         })
     
     return total_loss / num_batches
@@ -130,49 +161,59 @@ def evaluate(
     eval_loader,
     train_config: TrainingConfig
 ):
-    """Evaluate model on validation/test set"""
     model.eval()
     total_loss = 0
     num_batches = 0
-    
+
     all_predictions = []
     all_labels = []
-    
+
     with torch.no_grad():
         for batch in tqdm(eval_loader, desc="Evaluating", leave=False):
             input_ids = batch["input_ids"].to(train_config.device)
             attention_mask = batch["attention_mask"].to(train_config.device)
             labels = batch["labels"].to(train_config.device)
-            
+
             outputs = model(input_ids, attention_mask, labels)
-            
+
             total_loss += outputs["loss"].item()
             num_batches += 1
-            
-            # Get predictions
+
             predictions = outputs["predictions"]
-            
-            # Convert to label strings for seqeval
-            for pred_seq, label_seq, mask in zip(
-                predictions,
-                labels.cpu().numpy(),
-                attention_mask.cpu().numpy()
-            ):
-                pred_labels = []
+
+            for i in range(len(predictions)):
+                pred_seq = predictions[i]
+                label_seq = labels[i].cpu().numpy()
+
                 true_labels = []
-                
-                for pred, label, m in zip(pred_seq, label_seq, mask):
-                    if m == 1 and label != -100:
-                        pred_labels.append(ID2LABEL[pred])
-                        true_labels.append(ID2LABEL[label])
-                
-                if pred_labels:
-                    all_predictions.append(pred_labels)
+                pred_labels = []
+
+                pred_idx = 0
+
+                for j in range(len(label_seq)):
+                    if label_seq[j] == -100:
+                        continue
+
+                    true_labels.append(ID2LABEL[label_seq[j]])
+
+                    if pred_idx < len(pred_seq):
+                        pred_labels.append(ID2LABEL[pred_seq[pred_idx]])
+                        pred_idx += 1
+                    else:
+                        pred_labels.append("O")
+
+                if len(true_labels) > 0:
                     all_labels.append(true_labels)
-    
+                    all_predictions.append(pred_labels)
+
     avg_loss = total_loss / num_batches
+
+    # safety check
+    if len(all_labels) == 0:
+        return {"loss": avg_loss, "f1": 0.0, "predictions": [], "labels": []}
+
     f1 = f1_score(all_labels, all_predictions)
-    
+
     return {
         "loss": avg_loss,
         "f1": f1,
@@ -197,7 +238,6 @@ def train(
     # Create output directory
     os.makedirs(data_config.output_dir, exist_ok=True)
     os.makedirs(data_config.model_save_path, exist_ok=True)
-    os.makedirs(data_config.logs_dir, exist_ok=True)
     
     print("=" * 60)
     print("HireSense AI - Resume NER Training")
@@ -239,9 +279,19 @@ def train(
         model, train_config, num_training_steps
     )
     
+    # Initialize mixed precision scaler
+    scaler = GradScaler() if train_config.fp16 and torch.cuda.is_available() else None
+    
+    # Gradient accumulation for larger effective batch size
+    # Accumulate gradients to simulate a larger batch size if memory is constrained
+    accumulation_steps = train_config.gradient_accumulation_steps
+    
     # Training loop
     print("\n" + "=" * 60)
     print("Starting training...")
+    print(f"  Mixed Precision (FP16): {train_config.fp16 and torch.cuda.is_available()}")
+    print(f"  Gradient Accumulation Steps: {accumulation_steps}")
+    print(f"  Effective Batch Size: {train_config.train_batch_size * train_config.gradient_accumulation_steps}")
     print("=" * 60)
     
     best_f1 = 0
@@ -251,10 +301,10 @@ def train(
     for epoch in range(1, train_config.num_epochs + 1):
         start_time = time.time()
         
-        # Train
+        # Train with mixed precision
         train_loss = train_epoch(
             model, train_loader, optimizer, scheduler,
-            train_config, epoch
+            train_config, epoch, scaler, accumulation_steps
         )
         
         # Evaluate
@@ -334,10 +384,65 @@ def train(
         "label2id": LABEL2ID,
         "id2label": ID2LABEL
     }, final_save_path)
+    
+    # Save config and tokenizer for deployment
+    tokenizer.save_pretrained(data_config.model_save_path)
+    import json
+    with open(os.path.join(data_config.model_save_path, "model_config.json"), "w") as f:
+        json.dump({"bert_model_name": model_config.bert_model_name, "lstm_hidden_size": model_config.lstm_hidden_size, "lstm_num_layers": model_config.lstm_num_layers, "num_labels": len(LABEL2ID), "label2id": LABEL2ID, "id2label": {str(k): v for k, v in ID2LABEL.items()}}, f)
+        
     print(f"\nFinal model saved to: {final_save_path}")
     
     return model, training_history, test_results
 
 
 if __name__ == "__main__":
-    train()
+    parser = argparse.ArgumentParser(description="Train Resume NER model")
+    parser.add_argument("--data_path", type=str, default="./data/kaggle_resume_pdf",
+                        help="Path to the primary resume PDF data directory")
+    parser.add_argument("--output_dir", type=str, default="./output",
+                        help="Output directory for model and results")
+    parser.add_argument("--batch_size", type=int, default=8,
+                        help="Training batch size (e.g., 8 for 8GB VRAM)")
+    parser.add_argument("--accumulation_steps", type=int, default=4,
+                        help="Gradient accumulation steps")
+    parser.add_argument("--epochs", type=int, default=15,
+                        help="Number of training epochs")
+    parser.add_argument("--max_length", type=int, default=512,
+                        help="Maximum sequence length")
+    parser.add_argument("--lstm_hidden", type=int, default=256,
+                        help="LSTM hidden size")
+    parser.add_argument("--bert_lr", type=float, default=2e-5,
+                        help="BERT learning rate")
+    parser.add_argument("--lstm_lr", type=float, default=1e-3,
+                        help="LSTM/CRF learning rate")
+    parser.add_argument("--fp16", action="store_true",
+                        help="Use mixed precision training (FP16)")
+    parser.add_argument("--freeze_bert", action="store_true", default=False,
+                        help="Freeze BERT layers")
+    parser.add_argument("--patience", type=int, default=5,
+                        help="Early stopping patience")
+    
+    args = parser.parse_args()
+
+    # Get default configs
+    model_config, train_config, data_config = get_config()
+
+    # Override configs with CLI args
+    data_config.kaggle_pdf_path = args.data_path
+    data_config.output_dir = args.output_dir
+    data_config.model_save_path = os.path.join(args.output_dir, "model")
+    
+    train_config.train_batch_size = args.batch_size
+    train_config.gradient_accumulation_steps = args.accumulation_steps
+    train_config.num_epochs = args.epochs
+    train_config.max_seq_length = args.max_length
+    train_config.bert_learning_rate = args.bert_lr
+    train_config.lstm_crf_learning_rate = args.lstm_lr
+    train_config.fp16 = args.fp16 or (True if torch.cuda.is_available() else False) # Default to true if cuda available
+    train_config.early_stopping_patience = args.patience
+    
+    model_config.lstm_hidden_size = args.lstm_hidden
+    model_config.freeze_bert = args.freeze_bert
+
+    train(model_config, train_config, data_config)

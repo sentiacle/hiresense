@@ -11,7 +11,6 @@ from typing import Optional, Dict, Tuple
 
 from config import ModelConfig, NUM_LABELS, LABEL2ID, ID2LABEL
 
-
 class BertBiLSTMCRF(nn.Module):
     """
     BERT + BiLSTM + CRF for Named Entity Recognition
@@ -111,7 +110,8 @@ class BertBiLSTMCRF(nn.Module):
         if labels is not None:
             # Create mask for CRF (ignore -100 labels and padding)
             # CRF mask: True for valid positions, False for ignored
-            mask = (labels != -100) & (attention_mask == 1)
+            mask = attention_mask.bool().clone()
+            mask[:, 0] = True
             
             # Replace -100 with 0 for CRF (it will be masked anyway)
             labels_for_crf = labels.clone()
@@ -123,7 +123,8 @@ class BertBiLSTMCRF(nn.Module):
             
         # Get predictions using Viterbi decoding
         with torch.no_grad():
-            mask = attention_mask.bool()
+            mask = attention_mask.bool().clone()
+            mask[:, 0] = True
             predictions = self.crf.decode(emissions, mask=mask)
             outputs["predictions"] = predictions
             
@@ -174,8 +175,8 @@ class BertBiLSTMCRF(nn.Module):
             if word_idx is None:
                 continue
             if word_idx != prev_word_idx:
-                if idx < len(predictions):
-                    word_predictions.append((word_idx, predictions[idx]))
+                if len(word_predictions) < len(predictions):
+                    word_predictions.append((word_idx, predictions[len(word_predictions)]))
             prev_word_idx = word_idx
         
         # Extract entities using BIO scheme
@@ -258,10 +259,19 @@ class ModelForInference:
         Returns:
             List of entities with text, label, and positions
         """
-        # Simple tokenization (split on whitespace and punctuation)
         import re
+
+        # 🔥 Guard 1: empty text
+        if not text or len(text.strip()) == 0:
+            return []
+
+        # Tokenization
         tokens = re.findall(r'\b\w+\b|[^\w\s]', text)
-        
+
+        # 🔥 Guard 2: no tokens
+        if len(tokens) == 0:
+            return []
+
         # Tokenize for BERT
         encoding = self.tokenizer(
             tokens,
@@ -271,21 +281,29 @@ class ModelForInference:
             truncation=True,
             return_tensors="pt"
         )
-        
+
         input_ids = encoding["input_ids"].to(self.device)
         attention_mask = encoding["attention_mask"].to(self.device)
         word_ids = encoding.word_ids()
-        
+
+        # 🔥 Guard 3: word_ids safety
+        if word_ids is None:
+            return []
+
         # Get predictions
         _, predictions = self.model.predict(input_ids, attention_mask)
-        
+
+        # 🔥 Guard 4: empty predictions
+        if not predictions or len(predictions[0]) == 0:
+            return []
+
         # Extract entities
         entities = self.model.get_entities(
             tokens,
             predictions[0],  # First (and only) batch
             word_ids
         )
-        
+
         return entities
 
 

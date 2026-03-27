@@ -1,7 +1,4 @@
-"""
-HireSense AI - Model Evaluation Script
-Comprehensive evaluation metrics for Resume NER
-"""
+# This file is deprecated. Evaluation is now fully integrated into train.py.
 
 import os
 import json

@@ -30,11 +30,14 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    """Training hyperparameters"""
-    # Data
+    """
+    Training hyperparameters
+    Optimized for modern GPUs (e.g., RTX 4060 Ti)
+    """
+    # Data - batch_size=8 fits comfortably in 8GB VRAM with BERT
     max_seq_length: int = 512
-    train_batch_size: int = 16
-    eval_batch_size: int = 32
+    train_batch_size: int = 8  # Adjust based on VRAM, use gradient accumulation
+    eval_batch_size: int = 16
     
     # Optimizer
     bert_learning_rate: float = 2e-5
@@ -45,7 +48,7 @@ class TrainingConfig:
     
     # Scheduler
     warmup_ratio: float = 0.1
-    num_epochs: int = 10
+    num_epochs: int = 15  # More epochs since we have smaller batches
     
     # Evaluation
     eval_steps: int = 500
@@ -53,38 +56,37 @@ class TrainingConfig:
     logging_steps: int = 100
     
     # Early stopping
-    early_stopping_patience: int = 3
+    early_stopping_patience: int = 5  # More patience for NER
     early_stopping_threshold: float = 0.001
     
-    # Device
+    # Device - Auto-detect CUDA
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    fp16: bool = torch.cuda.is_available()  # Mixed precision training
+    fp16: bool = torch.cuda.is_available()  # Enable FP16 for modern GPUs
     
     # Reproducibility
     seed: int = 42
+    
+    # Gradient accumulation (effective batch = train_batch_size * accumulation_steps)
+    gradient_accumulation_steps: int = 4  # Effective batch of 32
 
 
 @dataclass
 class DataConfig:
     """Dataset configuration"""
-    # Paths (adjust for your environment)
+    # Paths to different datasets
+    # The main one from Kaggle for weak supervision
+    kaggle_pdf_path: str = "./data/kaggle_resume_pdf"
     resume_corpus_path: str = "./data/resume_corpus"
     ner_annotated_path: str = "./data/ner_annotated_cvs"
-    kaggle_pdf_path: str = "./data/kaggle_resume_pdf"
     
     # Output paths
     output_dir: str = "./output"
     model_save_path: str = "./output/model"
-    logs_dir: str = "./output/logs"
     
     # Train/val/test split
     train_ratio: float = 0.8
     val_ratio: float = 0.1
     test_ratio: float = 0.1
-    
-    # Preprocessing
-    lowercase: bool = True
-    remove_special_chars: bool = False
 
 
 # Entity labels for Resume NER (BIO format)
