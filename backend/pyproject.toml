@@ -1,0 +1,20 @@
+[project]
+name = "hiresense-backend"
+version = "1.0.0"
+description = "HireSense AI Backend - Resume NER with BERT + BiLSTM + CRF"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn>=0.24.0",
+    "torch>=2.0.0",
+    "transformers>=4.35.0",
+    "pytorch-crf>=0.7.2",
+    "pydantic>=2.5.0",
+    "python-multipart>=0.0.6",
+    "huggingface-hub>=0.19.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=7.4.0",
+]

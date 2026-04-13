@@ -1,0 +1,7 @@
+node_modules/
+.next/
+output/
+scripts/training/data/
+scripts/training/output/
+__pycache__/
+.env

@@ -1,0 +1,50 @@
+# HireSense AI — Training Dependencies
+# Multi-Sector Resume NER (BERT + BiLSTM + CRF)
+#
+# GPU setup (CUDA 11.8+, e.g. RTX 4060 Ti):
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+#
+# CPU-only:
+#   pip install torch torchvision torchaudio
+#
+# Then install everything below:
+#   pip install -r requirements.txt
+
+# ── Core ML ───────────────────────────────────────────────────────────────────
+torch>=2.0.0
+transformers>=4.35.0
+pytorch-crf>=0.7.2
+
+# ── Data & ML utilities ───────────────────────────────────────────────────────
+datasets>=2.14.0
+pandas>=2.0.0
+numpy>=1.24.0
+scikit-learn>=1.3.0
+
+# ── NER evaluation ────────────────────────────────────────────────────────────
+seqeval>=1.2.2
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+tqdm>=4.66.0
+
+# ── PDF parsing ───────────────────────────────────────────────────────────────
+# Engine 1: PyMuPDF (fastest, used first)
+PyMuPDF>=1.23.0
+
+# Engine 2: pdfplumber (better for multi-column PDFs)
+pdfplumber>=0.10.0
+
+# Engine 3: OCR fallback (scanned/image-only PDFs)
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# Note: pytesseract also requires Tesseract OCR binary:
+#   macOS : brew install tesseract
+#   Linux : sudo apt-get install -y tesseract-ocr
+#   Windows: https://github.com/UB-Mannheim/tesseract/wiki
+
+# ── Optional: ONNX export ─────────────────────────────────────────────────────
+# onnx>=1.15.0
+
+# ── Optional: Experiment tracking ────────────────────────────────────────────
+# wandb>=0.15.0
