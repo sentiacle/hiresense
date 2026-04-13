@@ -6,13 +6,23 @@ BERT + BiLSTM + CRF for Resume NER
 import os
 import json
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, Any
 from functools import lru_cache
 
-import torch
-import torch.nn as nn
-from transformers import BertModel, BertTokenizerFast
-from torchcrf import CRF
+try:
+    import torch
+    import torch.nn as nn
+    from transformers import BertModel, BertTokenizerFast
+    from torchcrf import CRF
+    ML_AVAILABLE = True
+    BaseModule = nn.Module
+except ImportError:
+    ML_AVAILABLE = False
+    BaseModule = object
+    # Mock types so type hints don't raise NameError
+    class _MockTorch:
+        Tensor = Any
+    torch = _MockTorch()
 
 
 # Entity labels
@@ -44,7 +54,7 @@ class ModelConfig:
         return self.lstm_hidden_size * (2 if self.lstm_bidirectional else 1)
 
 
-class BertBiLSTMCRF(nn.Module):
+class BertBiLSTMCRF(BaseModule):
     """BERT + BiLSTM + CRF for Named Entity Recognition"""
     
     def __init__(self, config: ModelConfig):
@@ -192,6 +202,11 @@ class ModelManager:
         if model_path:
             self.model_path = model_path
             
+        if not ML_AVAILABLE:
+            print("ML libraries (torch) not installed. Using fallback heuristic model for Serverless deployment...")
+            self._init_fallback_model()
+            return True
+            
         try:
             print(f"Loading model from {self.model_path}...")
             
@@ -240,7 +255,11 @@ class ModelManager:
     def _init_fallback_model(self):
         """Initialize fallback when trained model not available"""
         self.config = ModelConfig()
-        self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+        try:
+            from transformers import BertTokenizerFast
+            self.tokenizer = BertTokenizerFast.from_pretrained("bert-base-uncased")
+        except ImportError:
+            self.tokenizer = None
         self.model = None  # Will use heuristic extraction
         self.model_loaded = False
         
