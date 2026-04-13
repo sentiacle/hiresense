@@ -20,7 +20,7 @@ ENTITY_LABELS = [
     "O", "B-SKILL", "I-SKILL", "B-EXP", "I-EXP", "B-EDU", "I-EDU",
     "B-PROJ", "I-PROJ", "B-ACH", "I-ACH", "B-ORG", "I-ORG",
     "B-LOC", "I-LOC", "B-DATE", "I-DATE", "B-NAME", "I-NAME",
-    "B-CONTACT", "I-CONTACT", "B-CERT", "I-CERT"
+    "B-CONTACT", "I-CONTACT", "B-CERT", "I-CERT", "B-SECTOR", "I-SECTOR"
 ]
 
 LABEL2ID = {label: idx for idx, label in enumerate(ENTITY_LABELS)}
@@ -202,8 +202,13 @@ class ModelManager:
                 self._init_fallback_model()
                 return True
             
+            # Fix for "No module named 'config'" when PyTorch unpickles the model
+            import sys
+            if 'config' not in sys.modules:
+                sys.modules['config'] = sys.modules[__name__]
+
             # Load checkpoint
-            checkpoint = torch.load(self.model_path, map_location=self.device)
+            checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
             
             # Get config
             if "config" in checkpoint:
